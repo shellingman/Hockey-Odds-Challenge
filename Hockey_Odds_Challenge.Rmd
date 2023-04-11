@@ -1,0 +1,634 @@
+---
+title: "Hockey Odds Challenge"
+author: "Sean Hellingman"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r packages, echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(14)
+#rm(list = ls())
+if(!require(readr)) install.packages("readr")
+library(readr)
+if(!require(tidyverse)) install.packages("tidyverse")
+library(tidyverse)
+if(!require(ICCbin)) install.packages("ICCbin")
+library(ICCbin)
+if(!require(lme4)) install.packages("lme4")
+library(lme4)
+if(!require(MASS)) install.packages("MASS")
+library(MASS)
+if(!require(nnet)) install.packages("nnet")
+library(nnet)
+#if(!require(randomForest)) install.packages("randomForest")
+#library(randomForest)
+if(!require(caret)) install.packages("caret")
+library(caret)
+if(!require(AER)) install.packages("AER")
+library(AER)
+```
+
+
+\section{Ice Hockey}
+
+
+\subsection{Introduction}
+
+After some preliminary examination and the exclusion of some observations in the data five total models were estimated for each of the tasks using all of the remaining observations. The models were validated using ten-fold cross validation. Most of the code is left in this report as this is a coding assessment but normally reports like this would be much shorter. 
+
+```{r data,message = FALSE}
+Hockey <- read_csv("Icehockey_OU_data_3000.csv")
+Hockey$Goals <- Hockey$TotScore_T1 + Hockey$TotScore_T2
+Hockey$O4_5 <- ifelse(Hockey$Goals > 4.5,1,0)
+Hockey$O6_5 <- ifelse(Hockey$Goals > 6.5,1,0)
+```
+
+
+\subsection{A}
+
+\textit{Where could you imagine errors in the data? So what would you check before using it?}
+
+It is immediately apparent that the O/U 4.5 odds are missing many observations and will be re-estimated separately from the O/U 4.5 odds given in the dataset. Furthermore, there may be collection errors in the actual scores of the matches. This shouldn't be the case due to the availability of match scores. There are also some extreme values in the the O/U 5.5 odds, number of goals, and Tipp 1X2 values. There may also be some issues in the calculation of the O/U 5.5 odds as there is little information as to how they were obtained. 
+
+Some other problems may arise from the sparsity of data for specific leagues. A more in-depth analysis into which leagues could be combined and the variability of the number of goals within specific leagues. In this analysis, the \textit{Category} variable will be used to identify which nation the match was played in. Further issues arise in the availability of information about the teams themselves. The estimated fair odds for the result of each match provides information about which team is favoured but does not give any information about the historical scoring and defending abilities of either team. Assuming the O/U 5.5 odds are estimated using more detailed information this variable will have the most predictive power of all the available information. I do not anticipate very accurate predictions based on the available information.     
+
+
+```{r Quality}
+
+Hockey$P5_5O <- 1/Hockey$Over5_5
+Hockey$P5_5U <- 1/Hockey$Under5_5
+
+Hockey$T5_5 <- Hockey$P5_5O + Hockey$P5_5U #They are all approximately 1
+
+```
+
+```{r Visuals}
+par(mfrow=c(1,2))
+
+hist(Hockey$Goals,main = "Histogram of Goals Scored")
+hist(Hockey$Over5_5,main = "Histogram of Fair Over 5.5")
+
+boxplot(Hockey$Over5_5,main = "Given Odds Over 5.5")
+boxplot(Hockey$Under5_5,main = "Given Odds Under 5.5")
+```
+
+
+Extreme values were removed from the analysis. Other possible areas of exclusion could be women's matches, youth matches, or friendlies. These games were left in the analysis due to lack of informative variables but with more detailed information these competitions should be looked at separately. 
+
+```{r Extremes}
+
+#Matches over 11 goals
+Hockey$TopGoals <- ifelse(Hockey$Goals > quantile(Hockey$Goals,.99), "Yes" , "No")
+
+#Over 4.036668
+Hockey$TopOver5_5 <- ifelse(Hockey$Over5_5 > quantile(Hockey$Over5_5,.99), "Yes" , "No")
+
+#Over 7.727448
+Hockey$TopTipp1 <- ifelse(Hockey$Tipp1 > quantile(Hockey$Tipp1,.99), "Yes" , "No")
+
+#2917 observations remaining
+Hockey <- subset(Hockey,Hockey$TopGoals == "No" & Hockey$TopOver5_5 == "No" 
+                 & Hockey$TopTipp1 == "No")
+
+```
+
+
+\subsection{B}
+
+\textit{How would you derive Over/Under 4.5 and 6.5 odds out of this data?}
+
+
+The following models are focused on the binary outcome '1' if the total match goals are over 4.5 and over 6.5 and a '0' if they are not over either of those totals. Five total methods are used in this stage of the analysis. Logisitic regression, logistic regression with random intercepts, linear discriminant analysis (LDA), quadratic discriminant analysis (QDA), and a binary neural network. The estimates for the logistic regression models are shown below. It should be noted that no attempt was made to optimize the size or decay rates of the neural network models and that there may be more optimal models in existence. 
+
+Category, Tipp1, Tipp2, and Over5_5 are chosen as the explanatory variables. TippX and Under5_5 are excluded as their inclusion would create very high levels of colinearity. Furthermore, colinearity may exist between Over5_5 and the other included explanatory variables.   
+
+```{r Models, warning=FALSE}
+
+##Logistic Regression##
+
+logit4_5 <- glm(O4_5 ~ Category + Tipp1 + Tipp2 + Over5_5,
+                family = binomial,
+               data = Hockey)
+summary(logit4_5)
+
+logit6_5 <- glm(O6_5 ~ Tipp1 + Tipp2 + Category +  Over5_5,
+                family = binomial,
+               data = Hockey)
+summary(logit6_5)
+
+
+##ICC ESTIMATES Binary## #Not neccessary
+#iccbin(Category, O6_5, data = Hockey, method = "aov",
+#       ci.type = "aov", alpha = 0.05,
+#       kappa = 0.45, nAGQ = 1, M = 1000)
+
+#iccbin(Category, O4_5, data = Hockey, method = "fc",
+#       ci.type = "fc", alpha = 0.05,
+#       kappa = 0.45, nAGQ = 1, M = 1000)
+
+
+logitRS4_5 <- glmer(O4_5 ~ Tipp1 + Tipp2 + Over5_5 
+               + (1| Category) ,
+               family = binomial,  data=Hockey)
+summary(logitRS4_5) 
+
+logitRS6_5 <- glmer(O6_5 ~ Tipp1 + Tipp2 + Over5_5 
+               + (1| Category) ,
+               family = binomial,  data=Hockey)    
+summary(logitRS6_5) 
+#Random Intercepts are not useful as variance is very small
+
+##Simple Binary Classifiers LDA/QDA##
+
+lda4_5 <- lda(O4_5 ~ Category + Tipp1 + Tipp2 + Over5_5, 
+              data = Hockey)
+
+lda6_5 <- lda(O6_5 ~ Category + Tipp1 + Tipp2 + Over5_5, 
+              data = Hockey)
+
+qda4_5 <- qda(O4_5 ~ Category + Tipp1 + Tipp2 + Over5_5, 
+              data = Hockey)
+
+qda6_5 <- qda(O6_5 ~ Category + Tipp1 + Tipp2 + Over5_5, 
+              data = Hockey)
+
+
+##Neural Network##
+
+#size = Number of hidden units
+#decay is tuning parameter
+
+#Not optimized!!
+
+nnet4_5 <- nnet(O4_5 ~ Category + Tipp1 + Tipp2 + Over5_5,
+                data = Hockey,
+                size=2,decay=1.0e-2,maxit=1000,trace = FALSE)
+
+nnet6_5 <- nnet(O6_5 ~ Category + Tipp1 + Tipp2 + Over5_5,
+                data = Hockey,
+                size=2,decay=1.0e-2,maxit=1000,trace = FALSE)
+
+
+
+```
+
+As expected, the O/U 5.5 goals variable accounts for most of the variability in the models. The international category has a small amount of significance in the logistic regression model focusing on O/U 4.5. The second source of variability assumption caused by the category variable does not appear to hold. All models will be tested for the predictive capabilities. 
+
+
+
+
+\subsection{C}
+
+\textit{Please demonstrate the quality of your results.}
+
+In order to demonstrate the quality of the results ten-fold cross validation was conducted on each of the models focusing on predicted probabilities. Four measures of accuracy were used. The percentage of overall accuracy (Accuracy), the Kappa value, the mean absolute error (MAE), and root mean squared error (RMSE) were used. Higher accuracy and Kappa values are desired while smaller values for mean absolute error (MAE) and root mean squared error (RMSE) are desired. 
+
+
+```{r Validation4.5, echo=TRUE, message=FALSE, warning=FALSE}
+
+set.seed(14)
+
+
+CVHockey <- Hockey 
+#shuffle
+CVHockey<-CVHockey[sample(nrow(CVHockey)),] 
+#Create 10 equally size folds
+folds <- cut(seq(1,nrow(CVHockey)),breaks=10,labels=FALSE)
+
+Prediction.Capability <- data.frame(matrix(ncol = 6, nrow = 0 )) #Dataframe for results
+x <- c("Model","Test_Number", "Accuracy","Kappa","MAE","RMSE") #col names
+colnames(Prediction.Capability) <- x
+rm(x)
+PCLogit <- Prediction.Capability
+PCRS <- Prediction.Capability
+PCLDA <- Prediction.Capability
+PCQDA <- Prediction.Capability
+PCNN <- Prediction.Capability
+
+#Perform 10 fold cross validation
+for(i in 1:10){
+  #Segement your data by fold using the which() function 
+  testIndexes <- which(folds==i,arr.ind=TRUE)
+  testData <- CVHockey[testIndexes, ]
+  trainData <- na.omit(CVHockey[-testIndexes, ])
+  
+  
+  
+  logit4_5 <- glm(O4_5 ~ Category + Tipp1 + Tipp2 + Over5_5,
+                family = binomial,
+               data = trainData)
+  
+  RSlogit4_5 <- glmer(O4_5 ~ Tipp1 + Tipp2 + Over5_5 
+               + (1| Category) ,nAGQ=0,
+               family = binomial,  data=trainData)
+  
+  lda4_5 <- lda(O4_5 ~ Category + Tipp1 + Tipp2 + Over5_5, 
+              data = trainData)
+  
+  qda4_5 <- qda(O4_5 ~ Category + Tipp1 + Tipp2 + Over5_5, 
+              data = trainData)
+  
+  nnet4_5 <- nnet(O4_5 ~ Category + Tipp1 + Tipp2 + Over5_5,
+                data = trainData,
+                size=2,decay=1.0e-2,maxit=1000,trace = FALSE)
+  
+  
+
+  
+  #LOGIT#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- logit4_5 %>% predict(testData, type = "response")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$Pred, as.numeric(testData$O4_5))
+  rmse <- RMSE(predictions$Pred, as.numeric(testData$O4_5))
+  
+  predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  predictions$Pred <- factor(predictions$Pred)
+  testData$O4_5 <- factor(testData$O4_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O4_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit4_5",i, sep=""), logit4_5) #Save each model
+  PCLogit[1,] <- c("logit4_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  #LOGITRS#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- RSlogit4_5 %>% predict(testData, type = "response")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$Pred, as.numeric(testData$O4_5))
+  rmse <- RMSE(predictions$Pred, as.numeric(testData$O4_5))
+  
+  predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  predictions$Pred <- factor(predictions$Pred)
+  testData$O4_5 <- factor(testData$O4_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O4_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit4_5",i, sep=""), logit4_5) #Save each model
+  PCRS[1,] <- c("RSlogit4_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  
+  
+  #LDA#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- lda4_5 %>% predict(testData, type = "response")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$posterior.1, as.numeric(testData$O4_5))
+  rmse <- RMSE(predictions$posterior.1, as.numeric(testData$O4_5))
+  
+  #predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  #predictions$Pred <- factor(predictions$Pred)
+  testData$O4_5 <- factor(testData$O4_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O4_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit4_5",i, sep=""), logit4_5) #Save each model
+  PCLDA[1,] <- c("lda4_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  #QDA#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- qda4_5 %>% predict(testData, type = "response")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$posterior.1, as.numeric(testData$O4_5))
+  rmse <- RMSE(predictions$posterior.1, as.numeric(testData$O4_5))
+  
+  #predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  #predictions$Pred <- factor(predictions$Pred)
+  testData$O4_5 <- factor(testData$O4_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O4_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit4_5",i, sep=""), logit4_5) #Save each model
+  PCQDA[1,] <- c("qda4_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  
+  #NN#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- nnet4_5 %>% predict(testData, type = "raw")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$Pred, as.numeric(testData$O4_5))
+  rmse <- RMSE(predictions$Pred, as.numeric(testData$O4_5))
+  
+  predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  predictions$Pred <- factor(predictions$Pred)
+  testData$O4_5 <- factor(testData$O4_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O4_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit4_5",i, sep=""), logit4_5) #Save each model
+  PCNN[1,] <- c("nnet4_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  Prediction.Capability <- rbind(Prediction.Capability,PCLogit,PCRS,PCLDA,PCQDA,PCNN) 
+  #df with all the results 
+  
+}
+
+Prediction.Capability <- Prediction.Capability[order(Prediction.Capability$Model),]
+
+```
+
+Based on the averages of the scores applied to the ten-fold cross validation none of the models are particularly accurate with the mixed effects logistic regression being the most accurate. The QDA model has the best Kappa score and the logistic regression model has the best MAE and RMSE scores.  
+
+
+```{r Best_Models4_5}
+
+Prediction.Capability <-  Prediction.Capability %>% 
+  mutate_at(vars(Accuracy, Kappa, MAE, RMSE), as.numeric)
+
+aggregate(Prediction.Capability[, 3:6], list(Prediction.Capability$Model), mean)
+
+```
+
+
+
+```{r Validation6.5, echo=TRUE, message=FALSE, warning=FALSE}
+
+set.seed(14)
+
+
+CVHockey <- Hockey 
+#shuffle
+CVHockey<-CVHockey[sample(nrow(CVHockey)),] 
+#Create 10 equally size folds
+folds <- cut(seq(1,nrow(CVHockey)),breaks=10,labels=FALSE)
+
+Prediction.Capability <- data.frame(matrix(ncol = 6, nrow = 0 )) #Dataframe for results
+x <- c("Model","Test_Number", "Accuracy","Kappa","MAE","RMSE") #col names
+colnames(Prediction.Capability) <- x
+rm(x)
+PCLogit <- Prediction.Capability
+PCRS <- Prediction.Capability
+PCLDA <- Prediction.Capability
+PCQDA <- Prediction.Capability
+PCNN <- Prediction.Capability
+
+#Perform 10 fold cross validation
+for(i in 1:10){
+  #Segement your data by fold using the which() function 
+  testIndexes <- which(folds==i,arr.ind=TRUE)
+  testData <- CVHockey[testIndexes, ]
+  trainData <- na.omit(CVHockey[-testIndexes, ])
+  
+  
+  
+  logit6_5 <- glm(O6_5 ~ Category + Tipp1 + Tipp2 + Over5_5,
+                family = binomial,
+               data = trainData)
+  
+  RSlogit6_5 <- glmer(O6_5 ~ Tipp1 + Tipp2 + Over5_5 
+               + (1| Category) ,nAGQ=0,
+               family = binomial,  data=trainData)
+  
+  lda6_5 <- lda(O6_5 ~ Category + Tipp1 + Tipp2 + Over5_5, 
+              data = trainData)
+  
+  qda6_5 <- qda(O6_5 ~ Category + Tipp1 + Tipp2 + Over5_5, 
+              data = trainData)
+  
+  nnet6_5 <- nnet(O6_5 ~ Category + Tipp1 + Tipp2 + Over5_5,
+                data = trainData,
+                size=2,decay=1.0e-2,maxit=1000,trace = FALSE)
+  
+  
+
+  
+  #LOGIT#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- logit6_5 %>% predict(testData, type = "response")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$Pred, as.numeric(testData$O6_5))
+  rmse <- RMSE(predictions$Pred, as.numeric(testData$O6_5))
+  
+  predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  predictions$Pred <- factor(predictions$Pred)
+  testData$O6_5 <- factor(testData$O6_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O6_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit6_5",i, sep=""), logit6_5) #Save each model
+  PCLogit[1,] <- c("logit6_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  #LOGITRS#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- RSlogit6_5 %>% predict(testData, type = "response")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$Pred, as.numeric(testData$O6_5))
+  rmse <- RMSE(predictions$Pred, as.numeric(testData$O6_5))
+  
+  predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  predictions$Pred <- factor(predictions$Pred)
+  testData$O6_5 <- factor(testData$O6_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O6_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit6_5",i, sep=""), logit6_5) #Save each model
+  PCRS[1,] <- c("RSlogit6_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  
+  
+  #LDA#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- lda6_5 %>% predict(testData, type = "response")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$posterior.1, as.numeric(testData$O6_5))
+  rmse <- RMSE(predictions$posterior.1, as.numeric(testData$O6_5))
+  
+  #predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  #predictions$Pred <- factor(predictions$Pred)
+  testData$O6_5 <- factor(testData$O6_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O6_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit6_5",i, sep=""), logit6_5) #Save each model
+  PCLDA[1,] <- c("lda6_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  #QDA#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- qda6_5 %>% predict(testData, type = "response")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$posterior.1, as.numeric(testData$O6_5))
+  rmse <- RMSE(predictions$posterior.1, as.numeric(testData$O6_5))
+  
+  #predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  #predictions$Pred <- factor(predictions$Pred)
+  testData$O6_5 <- factor(testData$O6_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O6_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit6_5",i, sep=""), logit6_5) #Save each model
+  PCQDA[1,] <- c("qda6_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  
+  #NN#
+  # Make predictions and compute Accuracy, Kappa, MAE, and RMSE #
+  predictions <- nnet6_5 %>% predict(testData, type = "raw")
+  predictions <- as.data.frame(predictions)
+  names(predictions)[1] <- 'Pred'
+  mae <- MAE(predictions$Pred, as.numeric(testData$O6_5))
+  rmse <- RMSE(predictions$Pred, as.numeric(testData$O6_5))
+  
+  predictions <- as.data.frame(ifelse(predictions > 0.5,1,0))
+  predictions$Pred <- factor(predictions$Pred)
+  testData$O6_5 <- factor(testData$O6_5)
+  CON <- confusionMatrix(predictions$Pred, testData$O6_5)
+  CO <- as.data.frame(CON$overall)
+  
+
+  #assign(paste("logit6_5",i, sep=""), logit6_5) #Save each model
+  PCNN[1,] <- c("nnet6_5",i,CO[1,],CO[2,],mae,rmse)
+  
+  
+  Prediction.Capability <- rbind(Prediction.Capability,PCLogit,PCRS,PCLDA,PCQDA,PCNN) 
+  #df with all the results 
+  
+}
+
+Prediction.Capability <- Prediction.Capability[order(Prediction.Capability$Model),]
+
+```
+
+
+Overall, the accuracy is better, this is probably due to the fact that fewer matches have over 6.5 goals. The very low Kappa values support this assumption. Again, the mixed effects logistic regression is the most accurate. The QDA model has the best Kappa score and the logistic regression model has the best MAE and RMSE scores. 
+
+```{r Best_Models6_5}
+
+Prediction.Capability <-  Prediction.Capability %>% 
+  mutate_at(vars(Accuracy, Kappa, MAE, RMSE), as.numeric)
+
+aggregate(Prediction.Capability[, 3:6], list(Prediction.Capability$Model), mean)
+
+```
+
+
+
+\subsection{Poisson Odds}
+
+
+Under the assumption that the O/U 5.5 odds are accurately estimated and that scoring intensities in ice hockey follow a Poisson process this information may be used to estimate the probabilities of over/under 4.5 goals. This provides an alternative approach to the methods found above and does not require training and testing models.   
+
+```{r Goals,message = FALSE}
+Hockey$Goals <- Hockey$TotScore_T1 + Hockey$TotScore_T2
+Hockey$O4_5 <- ifelse(Hockey$Goals > 4.5,1,0)
+Hockey$O6_5 <- ifelse(Hockey$Goals > 6.5,1,0)
+Hockey$P5_5O <- 1/Hockey$Over5_5
+Hockey$P5_5U <- 1/Hockey$Under5_5
+```
+
+
+The assumption that the number of goals follows a Poisson process was tested. Overall, there is not enough evidence to reject the hypothesis that scoring in ice hockey follows a Poisson distribution. 
+
+```{r Dispersion_Check,message = FALSE}
+
+mean(Hockey$Goals)
+var(Hockey$Goals)
+
+P1 <- glm(Goals ~ Over5_5, family = poisson(link="log"), data=Hockey)
+#summary(P1)
+
+#Cameron & Trivedi (1990) Dispersion test
+dispersiontest(P1,trafo=1) #trafo = transformation function - linear specification
+dispersiontest(P1,trafo=2) #trafo = transformation function - quadratic specification
+
+```
+
+
+
+Numerical analysis was used to in order to estimate the rate parameters assumed for each match. A function was created based on the probability estimates that there are fewer than 5.5 goals coming from the Poisson process.   
+
+```{r Numeric,message = FALSE}
+
+f <- function(x){abs(ppois(5.5, print(x), lower.tail = TRUE, log.p = FALSE)-0.46)}
+
+xmin<-optimize(f, interval=c(4.5,7.5), tol=0.0001)
+```
+
+
+```{r Lambda_Estimation_Function,message = FALSE}
+
+#Function to estimate lambda numerically from under5.5 probabilities
+
+Lambda <- function(Probability){
+
+f <- function(x){abs(ppois(5.5, x, lower.tail = TRUE, log.p = FALSE)-Probability)}
+
+xmin<-optimize(f, interval=c(3.5,8.5), tol=0.0001)
+
+xmin$minimum
+
+}
+```
+
+
+
+Finally, the estimated rate parameters were used to assign probabilities of the over/under 4.5 goals outcomes. The Kappa values (estimated on the entire dataset) are slightly higher than the regression approach.  
+
+```{r Results,message = FALSE}
+
+#Rate Parameter for each match
+Hockey$Rate <- as.numeric(lapply(Hockey$P5_5U,Lambda))
+
+#Probability of over/under 4.5 Goals
+Hockey$PoissonU4_5 <- ppois(4.5, Hockey$Rate, lower.tail = TRUE, log.p = FALSE)
+Hockey$PoissonO4_5 <- 1 - Hockey$PoissonU4_5
+
+Hockey$PredictedO4_5Poisson <- ifelse(Hockey$PoissonO4_5 > 0.5,1,0)
+
+#Accuracy Check
+confusionMatrix(factor(Hockey$PredictedO4_5Poisson), factor(Hockey$O4_5))
+ 
+```
+
+
+
+
+\section{Conclusions}
+
+The models estimated in this task do not perform very well. They are missing relevant variables about the scoring and defending abilities of the teams. Assuming the estimates are correct, the O/U 5.5 goals odds serve as the most informative variable in the analysis as they are presumably estimated using additional information. Assuming a Poisson distribution and then estimating the Over/Under probabilities allows for a simplification of this modelling task. 
+
+Another approach to solving this problem could be to combine different techniques through ensemble learning. Furthermore, more could be done to focus on specific leagues and competitions as their scoring intensities may differ. The playing surfaces in North America for example, are smaller than the European competitions.  
+
+\section{Resources}
+
+
+lme4 package: https://cran.r-project.org/web/packages/lme4/index.html
+
+
+nnet package: https://cran.r-project.org/web/packages/nnet/index.html
+
+
+optimize function: https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/optimize
+
+
+
